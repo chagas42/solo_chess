@@ -1,10 +1,11 @@
 fn main() {
-    let board = Board([const {None}; 64]);
+    let board = Board([None; 64]);
 
 
     board.render();
 }
-
+#[allow(dead_code)]
+#[derive(Copy, Clone)]
 enum Piece {
     King,
     Queen,
@@ -21,9 +22,17 @@ impl Board {
         println!("-------------solo----------------------------------------");
         println!("------------------------chess----------------------------");
         println!("------------------------------------puzzle---------------");
+
+        let letters = "ABCDEFGH";
+        print!("   ");
+        for letter in letters.chars() {
+            print!("   {}   ", letter);
+        }
         for (i, _square) in self.0.iter().enumerate() {
+
             if i % 8 == 0 {
                 println!();
+                print!("{}  ", i/8 + 1);
             }
 
             match _square {
