@@ -1,5 +1,8 @@
 fn main() {
-    println!("Hello, world!");
+    let board = Board([const {None}; 64]);
+
+
+    board.render();
 }
 
 enum Piece {
@@ -15,12 +18,26 @@ pub struct Board([Option<Piece>; 64]);
 
 impl Board {
     fn render(&self) {
-        for (i, square) in self.0.iter().enumerate() {
-            if i % 8 == 0 && i != 0 {
+        println!("--------------------------------------------------------------------------------------");
+        println!("--------------------------------------------------------------------------------------");
+        println!("--------------------------------------------------------------------------------------");
+        for (i, _square) in self.0.iter().enumerate() {
+            if i % 8 == 0 {
+                // print!("X");
                 println!();
-            } else {
-                println!(". test");
+            }
+
+            match _square {
+                Some(Piece::King) => print!("[  K  ]"),
+                Some(Piece::Queen) => print!("[  Q  ]"),
+                Some(Piece::Tower) => print!("[  T  ]"),
+                Some(Piece::Bishop) => print!("[  B  ]"),
+                Some(Piece::Knight) => print!("[  C  ]"),
+                Some(Piece::Pawn) => print!("[  P  ]"),
+                None => print!("[  .  ]")
             }
         }
+    println!("\n------------");
     }
+
 }
