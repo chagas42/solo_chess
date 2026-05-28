@@ -19,9 +19,10 @@ const IMG_COLS: u32 = 6;
 const IMG_ROWS: u32 = 3;
 const CELL_W: usize = 10;
 const CELL_H: usize = 5;
-const BOARD_TOP: usize = 8;
+const BOARD_TOP: usize = 2;
 const BOARD_W: usize = 80;
-const TERM_ROWS: u16 = 50;
+const BOARD_H: usize = 2 + 8 * CELL_H + 2;
+const TERM_ROWS: u16 = 46;
 const TERM_COLS: u16 = 80;
 
 const PALETTE: [Color; 6] = [
@@ -45,7 +46,7 @@ fn letter_glyph(c: char) -> [u8; 5] {
     }
 }
 
-fn render_title(buf: &mut Vec<u8>, frame: u64) {
+fn render_title(buf: &mut Vec<u8>, frame: u64, term_cols: u16, top_row: u16) {
     const TITLE: &str = "SOLO CHESS";
     const LETTER_W: usize = 5;
 
@@ -66,16 +67,15 @@ fn render_title(buf: &mut Vec<u8>, frame: u64) {
         }
     }
     let total_w = col;
-    let left_pad = BOARD_W.saturating_sub(total_w) / 2;
+    let left_pad = (term_cols as usize).saturating_sub(total_w) / 2;
 
     for row in 0..5 {
-        queue!(buf, cursor::MoveTo(left_pad as u16, row as u16)).unwrap();
-        let mut current_col = 0usize;
         for &(letter_col, glyph) in &layout {
-            for _ in current_col..letter_col {
-                queue!(buf, ResetColor).unwrap();
-                write!(buf, " ").unwrap();
-            }
+            queue!(
+                buf,
+                cursor::MoveTo((left_pad + letter_col) as u16, top_row + row as u16)
+            )
+            .unwrap();
             for c in 0..LETTER_W {
                 let bit = (glyph[row] >> (4 - c)) & 1;
                 if bit == 1 {
@@ -87,10 +87,44 @@ fn render_title(buf: &mut Vec<u8>, frame: u64) {
                     write!(buf, " ").unwrap();
                 }
             }
-            current_col = letter_col + LETTER_W;
         }
         queue!(buf, ResetColor).unwrap();
     }
+}
+
+fn run_splash(stdout: &mut std::io::Stdout) {
+    let (term_cols, term_rows) = terminal::size().unwrap_or((TERM_COLS, TERM_ROWS));
+    let top_row = (term_rows as usize).saturating_sub(5) / 2;
+    let start = std::time::Instant::now();
+    let duration = std::time::Duration::from_millis(1800);
+    let mut frame: u64 = 0;
+
+    execute!(
+        *stdout,
+        terminal::Clear(terminal::ClearType::All),
+        cursor::MoveTo(0, 0)
+    )
+    .unwrap();
+
+    while start.elapsed() < duration {
+        let mut buf: Vec<u8> = Vec::with_capacity(8192);
+        render_title(&mut buf, frame, term_cols, top_row as u16);
+        stdout.write_all(&buf).unwrap();
+        stdout.flush().unwrap();
+
+        if event::poll(std::time::Duration::from_millis(80)).unwrap() {
+            let _ = event::read();
+            break;
+        }
+        frame = frame.wrapping_add(1);
+    }
+
+    execute!(
+        *stdout,
+        terminal::Clear(terminal::ClearType::All),
+        cursor::MoveTo(0, 0)
+    )
+    .unwrap();
 }
 
 const LIGHT_SQ: Color = Color::Rgb { r: 238, g: 238, b: 210 };
@@ -111,12 +145,17 @@ fn main() {
         cursor::Hide
     )
     .unwrap();
+
+    run_splash(&mut stdout);
     transmit_pieces();
+
+    let (term_cols, term_rows) = terminal::size().unwrap_or((TERM_COLS, TERM_ROWS));
+    let h_pad: u16 = ((term_cols as usize).saturating_sub(BOARD_W) / 2) as u16;
+    let v_pad: u16 = ((term_rows as usize).saturating_sub(BOARD_H) / 2) as u16;
 
     let mut session = PuzzleSession::new();
     let mut cursor: usize = 28;
     let mut selected: Option<usize> = None;
-    let mut frame: u64 = 0;
     let mut running = true;
 
     while running {
@@ -131,13 +170,9 @@ fn main() {
             (session.current_level + 1) as u8,
             session.current_puzzle + 1,
             session.levels[session.current_level].len(),
-            frame,
+            h_pad,
+            v_pad,
         );
-
-        frame = frame.wrapping_add(1);
-        if !event::poll(std::time::Duration::from_millis(80)).unwrap() {
-            continue;
-        }
 
         match event::read().unwrap() {
             Event::Key(KeyEvent {
@@ -429,31 +464,28 @@ impl Board {
         level: u8,
         puzzle_num: usize,
         total_puzzles: usize,
-        frame: u64,
+        h_pad: u16,
+        v_pad: u16,
     ) {
         let mut buf: Vec<u8> = Vec::with_capacity(16384);
         let won = self.is_won();
         let stuck = !won && !self.has_any_valid_move();
 
         kitty::clear_placements(&mut buf);
-        queue!(
-            buf,
-            terminal::Clear(terminal::ClearType::All),
-            cursor::MoveTo(0, 0)
-        )
-        .unwrap();
-
-        render_title(&mut buf, frame);
 
         let info = format!("Level {}   Puzzle {}/{}", level, puzzle_num, total_puzzles);
-        let info_pad = BOARD_W.saturating_sub(info.chars().count()) / 2;
-        queue!(buf, ResetColor, cursor::MoveTo(info_pad as u16, 6)).unwrap();
-        write!(buf, "{}", info).unwrap();
-
-        queue!(buf, cursor::MoveTo(0, BOARD_TOP as u16)).unwrap();
+        let info_centered = format!("{:^width$}", info, width = BOARD_W);
+        queue!(buf, ResetColor, cursor::MoveTo(h_pad, v_pad)).unwrap();
+        write!(buf, "{}", info_centered).unwrap();
+        queue!(buf, cursor::MoveTo(h_pad, v_pad + 1)).unwrap();
+        for _ in 0..BOARD_W {
+            write!(buf, " ").unwrap();
+        }
 
         for row in 0..8usize {
             for sub in 0..5usize {
+                let term_row = v_pad + (BOARD_TOP + row * CELL_H + sub) as u16;
+                queue!(buf, cursor::MoveTo(h_pad, term_row)).unwrap();
                 for col in 0..8usize {
                     let idx = row * 8 + col;
                     let light = (row + col) % 2 == 0;
@@ -543,12 +575,11 @@ impl Board {
                     }
                 }
                 queue!(buf, ResetColor).unwrap();
-                write!(buf, "\r\n").unwrap();
             }
         }
 
-        let status_row = (BOARD_TOP + 8 * CELL_H) as u16;
-        queue!(buf, ResetColor, cursor::MoveTo(0, status_row)).unwrap();
+        let status_row = v_pad + (BOARD_TOP + 8 * CELL_H) as u16;
+        queue!(buf, ResetColor, cursor::MoveTo(h_pad, status_row)).unwrap();
         let status_msg = if won {
             "SOLVED! press n for next puzzle"
         } else if stuck {
@@ -556,25 +587,20 @@ impl Board {
         } else {
             ""
         };
-        let status_pad = BOARD_W.saturating_sub(status_msg.chars().count()) / 2;
-        for _ in 0..status_pad {
-            write!(buf, " ").unwrap();
-        }
-        write!(buf, "{}", status_msg).unwrap();
+        let status_centered = format!("{:^width$}", status_msg, width = BOARD_W);
+        write!(buf, "{}", status_centered).unwrap();
 
-        queue!(buf, cursor::MoveTo(0, status_row + 1)).unwrap();
-        write!(
-            buf,
-            "\u{2191}\u{2193}\u{2190}\u{2192} move | Enter select | n next | p prev | r reset | 1-0 level | q quit"
-        )
-        .unwrap();
+        queue!(buf, cursor::MoveTo(h_pad, status_row + 1)).unwrap();
+        let keys = "\u{2191}\u{2193}\u{2190}\u{2192} move | Enter select | n next | p prev | r reset | 1-0 level | q quit";
+        let keys_centered = format!("{:^width$}", keys, width = BOARD_W);
+        write!(buf, "{}", keys_centered).unwrap();
 
         for idx in 0..64 {
             if let Some(p) = self.pieces[idx] {
                 let row = idx / 8;
                 let col = idx % 8;
-                let term_col = (col * CELL_W + 2) as u16;
-                let term_row = (BOARD_TOP + row * CELL_H + 1) as u16;
+                let term_col = h_pad + (col * CELL_W + 2) as u16;
+                let term_row = v_pad + (BOARD_TOP + row * CELL_H + 1) as u16;
                 queue!(buf, cursor::MoveTo(term_col, term_row)).unwrap();
                 kitty::place_image(&mut buf, piece_image_id(p), IMG_COLS, IMG_ROWS);
             }
