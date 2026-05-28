@@ -1,4 +1,5 @@
 mod kitty;
+mod puzzle;
 
 use crossterm::cursor;
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
@@ -18,7 +19,79 @@ const IMG_COLS: u32 = 6;
 const IMG_ROWS: u32 = 3;
 const CELL_W: usize = 10;
 const CELL_H: usize = 5;
-const BOARD_TOP: usize = 2;
+const BOARD_TOP: usize = 8;
+const BOARD_W: usize = 80;
+const TERM_ROWS: u16 = 50;
+const TERM_COLS: u16 = 80;
+
+const PALETTE: [Color; 6] = [
+    Color::Rgb { r: 240, g: 90, b: 90 },
+    Color::Rgb { r: 240, g: 170, b: 60 },
+    Color::Rgb { r: 230, g: 220, b: 90 },
+    Color::Rgb { r: 110, g: 210, b: 110 },
+    Color::Rgb { r: 90, g: 170, b: 230 },
+    Color::Rgb { r: 200, g: 110, b: 230 },
+];
+
+fn letter_glyph(c: char) -> [u8; 5] {
+    match c {
+        'S' => [0b11111, 0b10000, 0b11111, 0b00001, 0b11111],
+        'O' => [0b11111, 0b10001, 0b10001, 0b10001, 0b11111],
+        'L' => [0b10000, 0b10000, 0b10000, 0b10000, 0b11111],
+        'C' => [0b11111, 0b10000, 0b10000, 0b10000, 0b11111],
+        'H' => [0b10001, 0b10001, 0b11111, 0b10001, 0b10001],
+        'E' => [0b11111, 0b10000, 0b11111, 0b10000, 0b11111],
+        _ => [0; 5],
+    }
+}
+
+fn render_title(buf: &mut Vec<u8>, frame: u64) {
+    const TITLE: &str = "SOLO CHESS";
+    const LETTER_W: usize = 5;
+
+    let mut layout: Vec<(usize, [u8; 5])> = Vec::new();
+    let mut col = 0usize;
+    let mut prev_was_letter = false;
+    for c in TITLE.chars() {
+        if c == ' ' {
+            col += 3;
+            prev_was_letter = false;
+        } else {
+            if prev_was_letter {
+                col += 1;
+            }
+            layout.push((col, letter_glyph(c)));
+            col += LETTER_W;
+            prev_was_letter = true;
+        }
+    }
+    let total_w = col;
+    let left_pad = BOARD_W.saturating_sub(total_w) / 2;
+
+    for row in 0..5 {
+        queue!(buf, cursor::MoveTo(left_pad as u16, row as u16)).unwrap();
+        let mut current_col = 0usize;
+        for &(letter_col, glyph) in &layout {
+            for _ in current_col..letter_col {
+                queue!(buf, ResetColor).unwrap();
+                write!(buf, " ").unwrap();
+            }
+            for c in 0..LETTER_W {
+                let bit = (glyph[row] >> (4 - c)) & 1;
+                if bit == 1 {
+                    let idx = (letter_col + c + (frame / 3) as usize) % PALETTE.len();
+                    queue!(buf, SetForegroundColor(PALETTE[idx])).unwrap();
+                    write!(buf, "\u{2588}").unwrap();
+                } else {
+                    queue!(buf, ResetColor).unwrap();
+                    write!(buf, " ").unwrap();
+                }
+            }
+            current_col = letter_col + LETTER_W;
+        }
+        queue!(buf, ResetColor).unwrap();
+    }
+}
 
 const LIGHT_SQ: Color = Color::Rgb { r: 238, g: 238, b: 210 };
 const DARK_SQ: Color = Color::Rgb { r: 118, g: 150, b: 86 };
@@ -31,20 +104,40 @@ const DOT_FG: Color = Color::Rgb { r: 70, g: 70, b: 70 };
 fn main() {
     terminal::enable_raw_mode().unwrap();
     let mut stdout = std::io::stdout();
-    execute!(stdout, terminal::EnterAlternateScreen, cursor::Hide).unwrap();
+    execute!(
+        stdout,
+        terminal::EnterAlternateScreen,
+        terminal::SetSize(TERM_COLS, TERM_ROWS),
+        cursor::Hide
+    )
+    .unwrap();
     transmit_pieces();
 
-    let mut board = puzzle_knight();
-    let mut cursor = 28;
+    let mut session = PuzzleSession::new();
+    let mut cursor: usize = 28;
     let mut selected: Option<usize> = None;
+    let mut frame: u64 = 0;
     let mut running = true;
 
     while running {
         let moves = match selected {
-            Some(i) => board.moves(i),
-            None => Vec::new(),
+            Some(i) if session.board.moves_used[i] < 2 => session.board.moves(i),
+            _ => Vec::new(),
         };
-        board.render(cursor, selected, &moves);
+        session.board.render(
+            cursor,
+            selected,
+            &moves,
+            (session.current_level + 1) as u8,
+            session.current_puzzle + 1,
+            session.levels[session.current_level].len(),
+            frame,
+        );
+
+        frame = frame.wrapping_add(1);
+        if !event::poll(std::time::Duration::from_millis(80)).unwrap() {
+            continue;
+        }
 
         match event::read().unwrap() {
             Event::Key(KeyEvent {
@@ -89,18 +182,17 @@ fn main() {
                 ..
             }) => match selected {
                 None => {
-                    if board.0[cursor].is_some() {
+                    if session.board.pieces[cursor].is_some() {
                         selected = Some(cursor);
                     }
                 }
                 Some(from) => {
                     if from == cursor {
                         selected = None;
-                    } else if board.is_valid_move(from, cursor) {
-                        board.0[cursor] = board.0[from];
-                        board.0[from] = None;
+                    } else if session.board.is_valid_move(from, cursor) {
+                        session.board.make_move(from, cursor);
                         selected = None;
-                    } else if board.0[cursor].is_some() {
+                    } else if session.board.pieces[cursor].is_some() {
                         selected = Some(cursor);
                     } else {
                         selected = None;
@@ -112,6 +204,47 @@ fn main() {
                 kind: KeyEventKind::Press,
                 ..
             }) => {
+                selected = None;
+            }
+            Event::Key(KeyEvent {
+                code: KeyCode::Char('n'),
+                kind: KeyEventKind::Press,
+                ..
+            }) => {
+                session.next();
+                cursor = 28;
+                selected = None;
+            }
+            Event::Key(KeyEvent {
+                code: KeyCode::Char('p'),
+                kind: KeyEventKind::Press,
+                ..
+            }) => {
+                session.prev();
+                cursor = 28;
+                selected = None;
+            }
+            Event::Key(KeyEvent {
+                code: KeyCode::Char('r'),
+                kind: KeyEventKind::Press,
+                ..
+            }) => {
+                session.reset();
+                cursor = 28;
+                selected = None;
+            }
+            Event::Key(KeyEvent {
+                code: KeyCode::Char(c),
+                kind: KeyEventKind::Press,
+                ..
+            }) if c.is_ascii_digit() => {
+                let level = if c == '0' {
+                    9
+                } else {
+                    (c.to_digit(10).unwrap() - 1) as usize
+                };
+                session.goto_level(level);
+                cursor = 28;
                 selected = None;
             }
             Event::Key(KeyEvent {
@@ -129,17 +262,75 @@ fn main() {
     execute!(stdout, terminal::LeaveAlternateScreen, cursor::Show).unwrap();
 }
 
-fn puzzle_knight() -> Board {
-    let mut board = Board([None; 64]);
-    board.0[28] = Some(Piece::Knight);
-    board.0[43] = Some(Piece::Pawn);
-    board.0[45] = Some(Piece::Pawn);
-    board
+const PUZZLES_PER_LEVEL: usize = 3;
+const LEVELS: u8 = 10;
+
+struct PuzzleSession {
+    levels: Vec<Vec<Board>>,
+    current_level: usize,
+    current_puzzle: usize,
+    board: Board,
+}
+
+impl PuzzleSession {
+    fn new() -> Self {
+        let mut rng = puzzle::Rng::from_time();
+        let mut levels = Vec::with_capacity(LEVELS as usize);
+        for level in 1..=LEVELS {
+            let mut puzzles = Vec::with_capacity(PUZZLES_PER_LEVEL);
+            for _ in 0..PUZZLES_PER_LEVEL {
+                puzzles.push(puzzle::generate(level, &mut rng));
+            }
+            levels.push(puzzles);
+        }
+        let board = levels[0][0].clone();
+        PuzzleSession {
+            levels,
+            current_level: 0,
+            current_puzzle: 0,
+            board,
+        }
+    }
+
+    fn reset(&mut self) {
+        self.board = self.levels[self.current_level][self.current_puzzle].clone();
+    }
+
+    fn next(&mut self) {
+        self.current_puzzle += 1;
+        if self.current_puzzle >= self.levels[self.current_level].len() {
+            self.current_puzzle = 0;
+            self.current_level = (self.current_level + 1) % self.levels.len();
+        }
+        self.reset();
+    }
+
+    fn prev(&mut self) {
+        if self.current_puzzle == 0 {
+            self.current_level = if self.current_level == 0 {
+                self.levels.len() - 1
+            } else {
+                self.current_level - 1
+            };
+            self.current_puzzle = self.levels[self.current_level].len() - 1;
+        } else {
+            self.current_puzzle -= 1;
+        }
+        self.reset();
+    }
+
+    fn goto_level(&mut self, level: usize) {
+        if level < self.levels.len() {
+            self.current_level = level;
+            self.current_puzzle = 0;
+            self.reset();
+        }
+    }
 }
 
 #[allow(dead_code)]
-#[derive(Copy, Clone)]
-enum Piece {
+#[derive(Copy, Clone, PartialEq)]
+pub(crate) enum Piece {
     King,
     Queen,
     Tower,
@@ -173,15 +364,93 @@ fn transmit_pieces() {
     lock.flush().unwrap();
 }
 
-pub struct Board([Option<Piece>; 64]);
+#[derive(Clone)]
+pub struct Board {
+    pub(crate) pieces: [Option<Piece>; 64],
+    pub(crate) moves_used: [u8; 64],
+}
 
 impl Board {
-    fn render(&self, cursor: usize, selected: Option<usize>, moves: &[usize]) {
+    pub fn empty() -> Self {
+        Board {
+            pieces: [None; 64],
+            moves_used: [0; 64],
+        }
+    }
+
+    pub fn make_move(&mut self, from: usize, to: usize) {
+        let new_used = self.moves_used[from] + 1;
+        self.pieces[to] = self.pieces[from];
+        self.pieces[from] = None;
+        self.moves_used[to] = new_used;
+        self.moves_used[from] = 0;
+    }
+
+    pub fn piece_count(&self) -> usize {
+        self.pieces.iter().filter(|p| p.is_some()).count()
+    }
+
+    pub fn has_king(&self) -> bool {
+        self.pieces.iter().any(|p| matches!(p, Some(Piece::King)))
+    }
+
+    pub fn is_won(&self) -> bool {
+        if self.piece_count() != 1 {
+            return false;
+        }
+        if !self.has_king() {
+            return true;
+        }
+        self.pieces.iter().any(|p| matches!(p, Some(Piece::King)))
+    }
+
+    pub fn has_any_valid_move(&self) -> bool {
+        for from in 0..64 {
+            if self.pieces[from].is_none() || self.moves_used[from] >= 2 {
+                continue;
+            }
+            for to in self.moves(from) {
+                if self.is_valid_move(from, to) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+}
+
+
+impl Board {
+    fn render(
+        &self,
+        cursor: usize,
+        selected: Option<usize>,
+        moves: &[usize],
+        level: u8,
+        puzzle_num: usize,
+        total_puzzles: usize,
+        frame: u64,
+    ) {
         let mut buf: Vec<u8> = Vec::with_capacity(16384);
+        let won = self.is_won();
+        let stuck = !won && !self.has_any_valid_move();
 
         kitty::clear_placements(&mut buf);
-        queue!(buf, cursor::MoveTo(0, 0)).unwrap();
-        write!(buf, "Solo Chess\r\n\r\n").unwrap();
+        queue!(
+            buf,
+            terminal::Clear(terminal::ClearType::All),
+            cursor::MoveTo(0, 0)
+        )
+        .unwrap();
+
+        render_title(&mut buf, frame);
+
+        let info = format!("Level {}   Puzzle {}/{}", level, puzzle_num, total_puzzles);
+        let info_pad = BOARD_W.saturating_sub(info.chars().count()) / 2;
+        queue!(buf, ResetColor, cursor::MoveTo(info_pad as u16, 6)).unwrap();
+        write!(buf, "{}", info).unwrap();
+
+        queue!(buf, cursor::MoveTo(0, BOARD_TOP as u16)).unwrap();
 
         for row in 0..8usize {
             for sub in 0..5usize {
@@ -228,7 +497,7 @@ impl Board {
                             _ => {
                                 write!(buf, "{}", chars[3]).unwrap();
                                 let art_idx = sub - 1;
-                                if self.0[idx].is_some() {
+                                if self.pieces[idx].is_some() {
                                     write!(buf, "        ").unwrap();
                                 } else if is_target && art_idx == 1 {
                                     queue!(buf, SetForegroundColor(DOT_FG)).unwrap();
@@ -261,7 +530,7 @@ impl Board {
                             }
                             _ => {
                                 let art_idx = sub - 1;
-                                if self.0[idx].is_some() {
+                                if self.pieces[idx].is_some() {
                                     write!(buf, "          ").unwrap();
                                 } else if is_target && art_idx == 1 {
                                     queue!(buf, SetForegroundColor(DOT_FG)).unwrap();
@@ -278,15 +547,30 @@ impl Board {
             }
         }
 
-        write!(buf, "\r\n").unwrap();
+        let status_row = (BOARD_TOP + 8 * CELL_H) as u16;
+        queue!(buf, ResetColor, cursor::MoveTo(0, status_row)).unwrap();
+        let status_msg = if won {
+            "SOLVED! press n for next puzzle"
+        } else if stuck {
+            "Stuck \u{2014} press r to reset"
+        } else {
+            ""
+        };
+        let status_pad = BOARD_W.saturating_sub(status_msg.chars().count()) / 2;
+        for _ in 0..status_pad {
+            write!(buf, " ").unwrap();
+        }
+        write!(buf, "{}", status_msg).unwrap();
+
+        queue!(buf, cursor::MoveTo(0, status_row + 1)).unwrap();
         write!(
             buf,
-            "\u{2191}\u{2193}\u{2190}\u{2192} move   Enter select/move   Esc cancel   q quit\r\n"
+            "\u{2191}\u{2193}\u{2190}\u{2192} move | Enter select | n next | p prev | r reset | 1-0 level | q quit"
         )
         .unwrap();
 
         for idx in 0..64 {
-            if let Some(p) = self.0[idx] {
+            if let Some(p) = self.pieces[idx] {
                 let row = idx / 8;
                 let col = idx % 8;
                 let term_col = (col * CELL_W + 2) as u16;
@@ -302,10 +586,10 @@ impl Board {
         lock.flush().unwrap();
     }
 
-    fn moves(&self, index: usize) -> Vec<usize> {
+    pub(crate) fn moves(&self, index: usize) -> Vec<usize> {
         let row = index / 8;
         let col = index % 8;
-        let piece = match self.0[index] {
+        let piece = match self.pieces[index] {
             Some(p) => p,
             None => return Vec::new(),
         };
@@ -351,7 +635,7 @@ impl Board {
                     let mut c = col as i8 + dc;
                     while r >= 0 && r < 8 && c >= 0 && c < 8 {
                         targets.push(r as usize * 8 + c as usize);
-                        if self.0[r as usize * 8 + c as usize].is_some() {
+                        if self.pieces[r as usize * 8 + c as usize].is_some() {
                             break;
                         }
                         r += dr;
@@ -366,7 +650,7 @@ impl Board {
                     let mut c = col as i8 + dc;
                     while r >= 0 && r < 8 && c >= 0 && c < 8 {
                         targets.push(r as usize * 8 + c as usize);
-                        if self.0[r as usize * 8 + c as usize].is_some() {
+                        if self.pieces[r as usize * 8 + c as usize].is_some() {
                             break;
                         }
                         r += dr;
@@ -390,7 +674,7 @@ impl Board {
                     let mut c = col as i8 + dc;
                     while r >= 0 && r < 8 && c >= 0 && c < 8 {
                         targets.push(r as usize * 8 + c as usize);
-                        if self.0[r as usize * 8 + c as usize].is_some() {
+                        if self.pieces[r as usize * 8 + c as usize].is_some() {
                             break;
                         }
                         r += dr;
@@ -412,16 +696,16 @@ impl Board {
     }
 
     fn is_valid_move(&self, from: usize, to: usize) -> bool {
-        let source = match self.0[from] {
-            Some(_) => true,
-            None => return false,
-        };
-        let dest = match self.0[to] {
-            Some(_) => true,
-            None => return false,
-        };
-        if !source || !dest {
+        if self.pieces[from].is_none() {
             return false;
+        }
+        if self.moves_used[from] >= 2 {
+            return false;
+        }
+        match self.pieces[to] {
+            Some(Piece::King) => return false,
+            Some(_) => {}
+            None => return false,
         }
         for target in self.moves(from) {
             if target == to {
