@@ -14,6 +14,33 @@ const PIECE_ROOK: &[u8] = include_bytes!("../assets/wr.png");
 const PIECE_BISHOP: &[u8] = include_bytes!("../assets/wb.png");
 const PIECE_KNIGHT: &[u8] = include_bytes!("../assets/wn.png");
 const PIECE_PAWN: &[u8] = include_bytes!("../assets/wp.png");
+const CAPTURE_AUDIO: &[u8] = include_bytes!("../assets/capture.mp3");
+
+fn play_capture_sound() {
+    std::thread::spawn(|| {
+        let players: &[(&str, &[&str])] = &[
+            ("ffplay", &["-nodisp", "-autoexit", "-loglevel", "quiet", "-"]),
+            ("mpv", &["--no-video", "--really-quiet", "-"]),
+            ("mpg123", &["-q", "-"]),
+            ("play", &["-q", "-t", "mp3", "-"]),
+        ];
+        for (cmd, args) in players {
+            if let Ok(mut child) = std::process::Command::new(cmd)
+                .args(*args)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+            {
+                if let Some(mut stdin) = child.stdin.take() {
+                    let _ = stdin.write_all(CAPTURE_AUDIO);
+                }
+                let _ = child.wait();
+                return;
+            }
+        }
+    });
+}
 
 const IMG_COLS: u32 = 6;
 const IMG_ROWS: u32 = 3;
@@ -275,6 +302,7 @@ fn main() {
                         selected = None;
                     } else if session.board.is_valid_move(from, cursor) {
                         session.board.make_move(from, cursor);
+                        play_capture_sound();
                         selected = None;
                     } else if session.board.pieces[cursor].is_some() {
                         selected = Some(cursor);
