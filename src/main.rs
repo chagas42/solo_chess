@@ -14,6 +14,33 @@ const PIECE_ROOK: &[u8] = include_bytes!("../assets/wr.png");
 const PIECE_BISHOP: &[u8] = include_bytes!("../assets/wb.png");
 const PIECE_KNIGHT: &[u8] = include_bytes!("../assets/wn.png");
 const PIECE_PAWN: &[u8] = include_bytes!("../assets/wp.png");
+const CAPTURE_AUDIO: &[u8] = include_bytes!("../assets/capture.mp3");
+
+fn play_capture_sound() {
+    std::thread::spawn(|| {
+        let players: &[(&str, &[&str])] = &[
+            ("ffplay", &["-nodisp", "-autoexit", "-loglevel", "quiet", "-"]),
+            ("mpv", &["--no-video", "--really-quiet", "-"]),
+            ("mpg123", &["-q", "-"]),
+            ("play", &["-q", "-t", "mp3", "-"]),
+        ];
+        for (cmd, args) in players {
+            if let Ok(mut child) = std::process::Command::new(cmd)
+                .args(*args)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+            {
+                if let Some(mut stdin) = child.stdin.take() {
+                    let _ = stdin.write_all(CAPTURE_AUDIO);
+                }
+                let _ = child.wait();
+                return;
+            }
+        }
+    });
+}
 
 const IMG_COLS: u32 = 6;
 const IMG_ROWS: u32 = 3;
@@ -25,76 +52,100 @@ const BOARD_H: usize = 2 + 8 * CELL_H + 2;
 const TERM_ROWS: u16 = 46;
 const TERM_COLS: u16 = 80;
 
-const PALETTE: [Color; 6] = [
-    Color::Rgb { r: 240, g: 90, b: 90 },
-    Color::Rgb { r: 240, g: 170, b: 60 },
-    Color::Rgb { r: 230, g: 220, b: 90 },
-    Color::Rgb { r: 110, g: 210, b: 110 },
-    Color::Rgb { r: 90, g: 170, b: 230 },
-    Color::Rgb { r: 200, g: 110, b: 230 },
+const TILE_WHITE: Color = Color::Rgb { r: 245, g: 245, b: 245 };
+const TILE_GREEN: Color = Color::Rgb { r: 118, g: 150, b: 86 };
+
+const PAWN_GLYPH: [u16; 12] = [
+    0b0000111100000000,
+    0b0001111110000000,
+    0b0001111110000000,
+    0b0000111100000000,
+    0b0001111110000000,
+    0b0011111111000000,
+    0b0011111111000000,
+    0b0001111110000000,
+    0b0011111111000000,
+    0b0111111111100000,
+    0b1111111111110000,
+    0b1111111111110000,
 ];
 
-fn letter_glyph(c: char) -> [u8; 5] {
-    match c {
-        'S' => [0b11111, 0b10000, 0b11111, 0b00001, 0b11111],
-        'O' => [0b11111, 0b10001, 0b10001, 0b10001, 0b11111],
-        'L' => [0b10000, 0b10000, 0b10000, 0b10000, 0b11111],
-        'C' => [0b11111, 0b10000, 0b10000, 0b10000, 0b11111],
-        'H' => [0b10001, 0b10001, 0b11111, 0b10001, 0b10001],
-        'E' => [0b11111, 0b10000, 0b11111, 0b10000, 0b11111],
-        _ => [0; 5],
-    }
-}
+fn render_pawn_mosaic(buf: &mut Vec<u8>, frame: u64, term_cols: u16, top_row: u16) {
+    const PIECE_W: usize = 12;
+    const PIECE_H: usize = 12;
+    const PIXEL_W: usize = 2;
 
-fn render_title(buf: &mut Vec<u8>, frame: u64, term_cols: u16, top_row: u16) {
-    const TITLE: &str = "SOLO CHESS";
-    const LETTER_W: usize = 5;
-
-    let mut layout: Vec<(usize, [u8; 5])> = Vec::new();
-    let mut col = 0usize;
-    let mut prev_was_letter = false;
-    for c in TITLE.chars() {
-        if c == ' ' {
-            col += 3;
-            prev_was_letter = false;
-        } else {
-            if prev_was_letter {
-                col += 1;
-            }
-            layout.push((col, letter_glyph(c)));
-            col += LETTER_W;
-            prev_was_letter = true;
-        }
-    }
-    let total_w = col;
+    let total_w = PIECE_W * PIXEL_W;
     let left_pad = (term_cols as usize).saturating_sub(total_w) / 2;
 
-    for row in 0..5 {
-        for &(letter_col, glyph) in &layout {
-            queue!(
-                buf,
-                cursor::MoveTo((left_pad + letter_col) as u16, top_row + row as u16)
-            )
-            .unwrap();
-            for c in 0..LETTER_W {
-                let bit = (glyph[row] >> (4 - c)) & 1;
-                if bit == 1 {
-                    let idx = (letter_col + c + (frame / 3) as usize) % PALETTE.len();
-                    queue!(buf, SetForegroundColor(PALETTE[idx])).unwrap();
-                    write!(buf, "\u{2588}").unwrap();
-                } else {
-                    queue!(buf, ResetColor).unwrap();
-                    write!(buf, " ").unwrap();
-                }
+    for row in 0..PIECE_H {
+        queue!(
+            buf,
+            cursor::MoveTo(left_pad as u16, top_row + row as u16)
+        )
+        .unwrap();
+        for col in 0..PIECE_W {
+            let bit = (PAWN_GLYPH[row] >> (15 - col)) & 1;
+            if bit == 1 {
+                let phase = (col * 2 + row + (frame / 4) as usize) % 14;
+                let color = if phase < 11 { TILE_WHITE } else { TILE_GREEN };
+                queue!(buf, SetForegroundColor(color)).unwrap();
+                write!(buf, "\u{2588}\u{2588}").unwrap();
+            } else {
+                queue!(buf, ResetColor).unwrap();
+                write!(buf, "  ").unwrap();
             }
         }
-        queue!(buf, ResetColor).unwrap();
+    }
+    queue!(buf, ResetColor).unwrap();
+}
+
+fn wait_for_size(stdout: &mut std::io::Stdout) -> bool {
+    loop {
+        let (cols, rows) = terminal::size().unwrap_or((0, 0));
+        if cols >= TERM_COLS && rows >= TERM_ROWS {
+            return true;
+        }
+
+        execute!(
+            *stdout,
+            terminal::Clear(terminal::ClearType::All),
+            ResetColor,
+            cursor::MoveTo(0, 0)
+        )
+        .unwrap();
+
+        let mut buf = Vec::new();
+        write!(buf, "terminal pequeno demais\r\n").unwrap();
+        write!(
+            buf,
+            "precisa de pelo menos {} colunas x {} linhas\r\n",
+            TERM_COLS, TERM_ROWS
+        )
+        .unwrap();
+        write!(buf, "atual: {} x {}\r\n", cols, rows).unwrap();
+        write!(buf, "\r\n").unwrap();
+        write!(buf, "redimensiona a janela ou pressiona q pra sair\r\n").unwrap();
+        stdout.write_all(&buf).unwrap();
+        stdout.flush().unwrap();
+
+        loop {
+            match event::read().unwrap() {
+                Event::Resize(_, _) => break,
+                Event::Key(KeyEvent {
+                    code: KeyCode::Char('q'),
+                    kind: KeyEventKind::Press,
+                    ..
+                }) => return false,
+                _ => continue,
+            }
+        }
     }
 }
 
 fn run_splash(stdout: &mut std::io::Stdout) {
     let (term_cols, term_rows) = terminal::size().unwrap_or((TERM_COLS, TERM_ROWS));
-    let top_row = (term_rows as usize).saturating_sub(5) / 2;
+    let top_row = (term_rows as usize).saturating_sub(12) / 2;
     let start = std::time::Instant::now();
     let duration = std::time::Duration::from_millis(1800);
     let mut frame: u64 = 0;
@@ -108,7 +159,7 @@ fn run_splash(stdout: &mut std::io::Stdout) {
 
     while start.elapsed() < duration {
         let mut buf: Vec<u8> = Vec::with_capacity(8192);
-        render_title(&mut buf, frame, term_cols, top_row as u16);
+        render_pawn_mosaic(&mut buf, frame, term_cols, top_row as u16);
         stdout.write_all(&buf).unwrap();
         stdout.flush().unwrap();
 
@@ -129,10 +180,9 @@ fn run_splash(stdout: &mut std::io::Stdout) {
 
 const LIGHT_SQ: Color = Color::Rgb { r: 238, g: 238, b: 210 };
 const DARK_SQ: Color = Color::Rgb { r: 118, g: 150, b: 86 };
-const SELECTED_ON_DARK: Color = Color::Rgb { r: 255, g: 215, b: 60 };
-const SELECTED_ON_LIGHT: Color = Color::Rgb { r: 170, g: 110, b: 25 };
-const CURSOR_ON_DARK: Color = Color::Rgb { r: 240, g: 240, b: 180 };
-const CURSOR_ON_LIGHT: Color = Color::Rgb { r: 95, g: 85, b: 35 };
+const SELECTED_BG: Color = Color::Rgb { r: 246, g: 246, b: 105 };
+const CURSOR_BG_LIGHT: Color = Color::Rgb { r: 225, g: 225, b: 175 };
+const CURSOR_BG_DARK: Color = Color::Rgb { r: 142, g: 172, b: 105 };
 const DOT_FG: Color = Color::Rgb { r: 70, g: 70, b: 70 };
 
 fn main() {
@@ -146,12 +196,18 @@ fn main() {
     )
     .unwrap();
 
+    if !wait_for_size(&mut stdout) {
+        execute!(stdout, terminal::LeaveAlternateScreen, cursor::Show).unwrap();
+        terminal::disable_raw_mode().unwrap();
+        return;
+    }
+
     run_splash(&mut stdout);
     transmit_pieces();
 
     let (term_cols, term_rows) = terminal::size().unwrap_or((TERM_COLS, TERM_ROWS));
-    let h_pad: u16 = ((term_cols as usize).saturating_sub(BOARD_W) / 2) as u16;
-    let v_pad: u16 = ((term_rows as usize).saturating_sub(BOARD_H) / 2) as u16;
+    let mut h_pad: u16 = ((term_cols as usize).saturating_sub(BOARD_W) / 2) as u16;
+    let mut v_pad: u16 = ((term_rows as usize).saturating_sub(BOARD_H) / 2) as u16;
 
     let mut session = PuzzleSession::new();
     let mut cursor: usize = 28;
@@ -226,6 +282,7 @@ fn main() {
                         selected = None;
                     } else if session.board.is_valid_move(from, cursor) {
                         session.board.make_move(from, cursor);
+                        play_capture_sound();
                         selected = None;
                     } else if session.board.pieces[cursor].is_some() {
                         selected = Some(cursor);
@@ -288,6 +345,18 @@ fn main() {
                 ..
             }) => {
                 running = false;
+            }
+            Event::Resize(new_cols, new_rows) => {
+                if new_cols < TERM_COLS || new_rows < TERM_ROWS {
+                    if !wait_for_size(&mut stdout) {
+                        running = false;
+                        continue;
+                    }
+                    transmit_pieces();
+                }
+                let (cols, rows) = terminal::size().unwrap_or((TERM_COLS, TERM_ROWS));
+                h_pad = ((cols as usize).saturating_sub(BOARD_W) / 2) as u16;
+                v_pad = ((rows as usize).saturating_sub(BOARD_H) / 2) as u16;
             }
             _ => {}
         }
@@ -493,83 +562,44 @@ impl Board {
                     let is_selected = selected == Some(idx);
                     let is_target = moves.contains(&idx);
 
-                    let bg = if light { LIGHT_SQ } else { DARK_SQ };
+                    let base_bg = if light { LIGHT_SQ } else { DARK_SQ };
+                    let bg = if is_selected {
+                        SELECTED_BG
+                    } else if is_cursor {
+                        if light { CURSOR_BG_LIGHT } else { CURSOR_BG_DARK }
+                    } else {
+                        base_bg
+                    };
                     let label_fg = if light { DARK_SQ } else { LIGHT_SQ };
 
                     queue!(buf, SetBackgroundColor(bg)).unwrap();
 
-                    let selected_line = if light { SELECTED_ON_LIGHT } else { SELECTED_ON_DARK };
-                    let cursor_line = if light { CURSOR_ON_LIGHT } else { CURSOR_ON_DARK };
-
-                    let outline: Option<(Color, [&str; 6])> = if is_selected {
-                        Some((selected_line, ["╔", "═", "╗", "║", "╚", "╝"]))
-                    } else if is_cursor {
-                        Some((cursor_line, ["┌", "─", "┐", "│", "└", "┘"]))
-                    } else {
-                        None
-                    };
-
-                    if let Some((c, chars)) = outline {
-                        queue!(buf, SetForegroundColor(c)).unwrap();
-                        match sub {
-                            0 => {
-                                write!(buf, "{}", chars[0]).unwrap();
-                                for _ in 0..8 {
-                                    write!(buf, "{}", chars[1]).unwrap();
-                                }
-                                write!(buf, "{}", chars[2]).unwrap();
-                            }
-                            4 => {
-                                write!(buf, "{}", chars[4]).unwrap();
-                                for _ in 0..8 {
-                                    write!(buf, "{}", chars[1]).unwrap();
-                                }
-                                write!(buf, "{}", chars[5]).unwrap();
-                            }
-                            _ => {
-                                write!(buf, "{}", chars[3]).unwrap();
-                                let art_idx = sub - 1;
-                                if self.pieces[idx].is_some() {
-                                    write!(buf, "        ").unwrap();
-                                } else if is_target && art_idx == 1 {
-                                    queue!(buf, SetForegroundColor(DOT_FG)).unwrap();
-                                    write!(buf, "   \u{2022}    ").unwrap();
-                                } else {
-                                    write!(buf, "        ").unwrap();
-                                }
-                                queue!(buf, SetForegroundColor(c)).unwrap();
-                                write!(buf, "{}", chars[3]).unwrap();
+                    match sub {
+                        0 => {
+                            if col == 0 {
+                                queue!(buf, SetForegroundColor(label_fg)).unwrap();
+                                write!(buf, " {}        ", 8 - row).unwrap();
+                            } else {
+                                write!(buf, "          ").unwrap();
                             }
                         }
-                    } else {
-                        match sub {
-                            0 => {
-                                if col == 0 {
-                                    queue!(buf, SetForegroundColor(label_fg)).unwrap();
-                                    write!(buf, " {}        ", 8 - row).unwrap();
-                                } else {
-                                    write!(buf, "          ").unwrap();
-                                }
+                        4 => {
+                            if row == 7 {
+                                queue!(buf, SetForegroundColor(label_fg)).unwrap();
+                                let file = (b'a' + col as u8) as char;
+                                write!(buf, "    {}     ", file).unwrap();
+                            } else {
+                                write!(buf, "          ").unwrap();
                             }
-                            4 => {
-                                if row == 7 {
-                                    queue!(buf, SetForegroundColor(label_fg)).unwrap();
-                                    let file = (b'a' + col as u8) as char;
-                                    write!(buf, "    {}     ", file).unwrap();
-                                } else {
-                                    write!(buf, "          ").unwrap();
-                                }
-                            }
-                            _ => {
-                                let art_idx = sub - 1;
-                                if self.pieces[idx].is_some() {
-                                    write!(buf, "          ").unwrap();
-                                } else if is_target && art_idx == 1 {
-                                    queue!(buf, SetForegroundColor(DOT_FG)).unwrap();
-                                    write!(buf, "    \u{2022}     ").unwrap();
-                                } else {
-                                    write!(buf, "          ").unwrap();
-                                }
+                        }
+                        _ => {
+                            if self.pieces[idx].is_some() {
+                                write!(buf, "          ").unwrap();
+                            } else if is_target && sub == 2 {
+                                queue!(buf, SetForegroundColor(DOT_FG)).unwrap();
+                                write!(buf, "    \u{2022}     ").unwrap();
+                            } else {
+                                write!(buf, "          ").unwrap();
                             }
                         }
                     }
