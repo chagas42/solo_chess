@@ -70,7 +70,19 @@ const PAWN_GLYPH: [u16; 12] = [
     0b1111111111110000,
 ];
 
-fn render_pawn_mosaic(buf: &mut Vec<u8>, frame: u64, term_cols: u16, top_row: u16) {
+fn letter_glyph(c: char) -> [u8; 5] {
+    match c {
+        'S' => [0b11111, 0b10000, 0b11111, 0b00001, 0b11111],
+        'O' => [0b11111, 0b10001, 0b10001, 0b10001, 0b11111],
+        'L' => [0b10000, 0b10000, 0b10000, 0b10000, 0b11111],
+        'C' => [0b11111, 0b10000, 0b10000, 0b10000, 0b11111],
+        'H' => [0b10001, 0b10001, 0b11111, 0b10001, 0b10001],
+        'E' => [0b11111, 0b10000, 0b11111, 0b10000, 0b11111],
+        _ => [0; 5],
+    }
+}
+
+fn render_pawn_mosaic(buf: &mut Vec<u8>, term_cols: u16, top_row: u16) {
     const PIECE_W: usize = 12;
     const PIECE_H: usize = 12;
     const PIXEL_W: usize = 2;
@@ -78,6 +90,7 @@ fn render_pawn_mosaic(buf: &mut Vec<u8>, frame: u64, term_cols: u16, top_row: u1
     let total_w = PIECE_W * PIXEL_W;
     let left_pad = (term_cols as usize).saturating_sub(total_w) / 2;
 
+    queue!(buf, SetForegroundColor(TILE_WHITE)).unwrap();
     for row in 0..PIECE_H {
         queue!(
             buf,
@@ -87,13 +100,56 @@ fn render_pawn_mosaic(buf: &mut Vec<u8>, frame: u64, term_cols: u16, top_row: u1
         for col in 0..PIECE_W {
             let bit = (PAWN_GLYPH[row] >> (15 - col)) & 1;
             if bit == 1 {
-                let phase = (col * 2 + row + (frame / 4) as usize) % 14;
-                let color = if phase < 11 { TILE_WHITE } else { TILE_GREEN };
-                queue!(buf, SetForegroundColor(color)).unwrap();
                 write!(buf, "\u{2588}\u{2588}").unwrap();
             } else {
-                queue!(buf, ResetColor).unwrap();
                 write!(buf, "  ").unwrap();
+            }
+        }
+    }
+    queue!(buf, ResetColor).unwrap();
+}
+
+fn render_solo_chess_text(buf: &mut Vec<u8>, term_cols: u16, top_row: u16) {
+    const LETTER_W: usize = 5;
+    let solo_w = 4 * LETTER_W + 3;
+    let chess_w = 5 * LETTER_W + 4;
+    let total_w = solo_w + 3 + chess_w;
+    let left_pad = (term_cols as usize).saturating_sub(total_w) / 2;
+
+    for row in 0..5 {
+        queue!(buf, cursor::MoveTo(left_pad as u16, top_row + row as u16)).unwrap();
+
+        queue!(buf, SetForegroundColor(TILE_WHITE)).unwrap();
+        for (i, ch) in "SOLO".chars().enumerate() {
+            if i > 0 {
+                write!(buf, " ").unwrap();
+            }
+            let glyph = letter_glyph(ch);
+            for c in 0..LETTER_W {
+                let bit = (glyph[row] >> (4 - c)) & 1;
+                if bit == 1 {
+                    write!(buf, "\u{2588}").unwrap();
+                } else {
+                    write!(buf, " ").unwrap();
+                }
+            }
+        }
+
+        write!(buf, "   ").unwrap();
+
+        queue!(buf, SetForegroundColor(TILE_GREEN)).unwrap();
+        for (i, ch) in "CHESS".chars().enumerate() {
+            if i > 0 {
+                write!(buf, " ").unwrap();
+            }
+            let glyph = letter_glyph(ch);
+            for c in 0..LETTER_W {
+                let bit = (glyph[row] >> (4 - c)) & 1;
+                if bit == 1 {
+                    write!(buf, "\u{2588}").unwrap();
+                } else {
+                    write!(buf, " ").unwrap();
+                }
             }
         }
     }
@@ -145,10 +201,12 @@ fn wait_for_size(stdout: &mut std::io::Stdout) -> bool {
 
 fn run_splash(stdout: &mut std::io::Stdout) {
     let (term_cols, term_rows) = terminal::size().unwrap_or((TERM_COLS, TERM_ROWS));
-    let top_row = (term_rows as usize).saturating_sub(12) / 2;
-    let start = std::time::Instant::now();
-    let duration = std::time::Duration::from_millis(1800);
-    let mut frame: u64 = 0;
+    const PAWN_H: usize = 12;
+    const GAP: usize = 2;
+    const TEXT_H: usize = 5;
+    let total_h = PAWN_H + GAP + TEXT_H;
+    let pawn_top = (term_rows as usize).saturating_sub(total_h) / 2;
+    let text_top = pawn_top + PAWN_H + GAP;
 
     execute!(
         *stdout,
@@ -157,17 +215,19 @@ fn run_splash(stdout: &mut std::io::Stdout) {
     )
     .unwrap();
 
-    while start.elapsed() < duration {
-        let mut buf: Vec<u8> = Vec::with_capacity(8192);
-        render_pawn_mosaic(&mut buf, frame, term_cols, top_row as u16);
-        stdout.write_all(&buf).unwrap();
-        stdout.flush().unwrap();
+    let mut buf: Vec<u8> = Vec::with_capacity(16384);
+    render_pawn_mosaic(&mut buf, term_cols, pawn_top as u16);
+    render_solo_chess_text(&mut buf, term_cols, text_top as u16);
+    stdout.write_all(&buf).unwrap();
+    stdout.flush().unwrap();
 
-        if event::poll(std::time::Duration::from_millis(80)).unwrap() {
+    let start = std::time::Instant::now();
+    let duration = std::time::Duration::from_millis(1800);
+    while start.elapsed() < duration {
+        if event::poll(std::time::Duration::from_millis(50)).unwrap() {
             let _ = event::read();
             break;
         }
-        frame = frame.wrapping_add(1);
     }
 
     execute!(
