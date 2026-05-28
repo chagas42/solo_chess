@@ -14,6 +14,33 @@ const PIECE_ROOK: &[u8] = include_bytes!("../assets/wr.png");
 const PIECE_BISHOP: &[u8] = include_bytes!("../assets/wb.png");
 const PIECE_KNIGHT: &[u8] = include_bytes!("../assets/wn.png");
 const PIECE_PAWN: &[u8] = include_bytes!("../assets/wp.png");
+const CAPTURE_AUDIO: &[u8] = include_bytes!("../assets/capture.mp3");
+
+fn play_capture_sound() {
+    std::thread::spawn(|| {
+        let players: &[(&str, &[&str])] = &[
+            ("ffplay", &["-nodisp", "-autoexit", "-loglevel", "quiet", "-"]),
+            ("mpv", &["--no-video", "--really-quiet", "-"]),
+            ("mpg123", &["-q", "-"]),
+            ("play", &["-q", "-t", "mp3", "-"]),
+        ];
+        for (cmd, args) in players {
+            if let Ok(mut child) = std::process::Command::new(cmd)
+                .args(*args)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+            {
+                if let Some(mut stdin) = child.stdin.take() {
+                    let _ = stdin.write_all(CAPTURE_AUDIO);
+                }
+                let _ = child.wait();
+                return;
+            }
+        }
+    });
+}
 
 const IMG_COLS: u32 = 6;
 const IMG_ROWS: u32 = 3;
@@ -92,6 +119,49 @@ fn render_title(buf: &mut Vec<u8>, frame: u64, term_cols: u16, top_row: u16) {
     }
 }
 
+fn wait_for_size(stdout: &mut std::io::Stdout) -> bool {
+    loop {
+        let (cols, rows) = terminal::size().unwrap_or((0, 0));
+        if cols >= TERM_COLS && rows >= TERM_ROWS {
+            return true;
+        }
+
+        execute!(
+            *stdout,
+            terminal::Clear(terminal::ClearType::All),
+            ResetColor,
+            cursor::MoveTo(0, 0)
+        )
+        .unwrap();
+
+        let mut buf = Vec::new();
+        write!(buf, "terminal pequeno demais\r\n").unwrap();
+        write!(
+            buf,
+            "precisa de pelo menos {} colunas x {} linhas\r\n",
+            TERM_COLS, TERM_ROWS
+        )
+        .unwrap();
+        write!(buf, "atual: {} x {}\r\n", cols, rows).unwrap();
+        write!(buf, "\r\n").unwrap();
+        write!(buf, "redimensiona a janela ou pressiona q pra sair\r\n").unwrap();
+        stdout.write_all(&buf).unwrap();
+        stdout.flush().unwrap();
+
+        loop {
+            match event::read().unwrap() {
+                Event::Resize(_, _) => break,
+                Event::Key(KeyEvent {
+                    code: KeyCode::Char('q'),
+                    kind: KeyEventKind::Press,
+                    ..
+                }) => return false,
+                _ => continue,
+            }
+        }
+    }
+}
+
 fn run_splash(stdout: &mut std::io::Stdout) {
     let (term_cols, term_rows) = terminal::size().unwrap_or((TERM_COLS, TERM_ROWS));
     let top_row = (term_rows as usize).saturating_sub(5) / 2;
@@ -146,12 +216,18 @@ fn main() {
     )
     .unwrap();
 
+    if !wait_for_size(&mut stdout) {
+        execute!(stdout, terminal::LeaveAlternateScreen, cursor::Show).unwrap();
+        terminal::disable_raw_mode().unwrap();
+        return;
+    }
+
     run_splash(&mut stdout);
     transmit_pieces();
 
     let (term_cols, term_rows) = terminal::size().unwrap_or((TERM_COLS, TERM_ROWS));
-    let h_pad: u16 = ((term_cols as usize).saturating_sub(BOARD_W) / 2) as u16;
-    let v_pad: u16 = ((term_rows as usize).saturating_sub(BOARD_H) / 2) as u16;
+    let mut h_pad: u16 = ((term_cols as usize).saturating_sub(BOARD_W) / 2) as u16;
+    let mut v_pad: u16 = ((term_rows as usize).saturating_sub(BOARD_H) / 2) as u16;
 
     let mut session = PuzzleSession::new();
     let mut cursor: usize = 28;
@@ -226,6 +302,7 @@ fn main() {
                         selected = None;
                     } else if session.board.is_valid_move(from, cursor) {
                         session.board.make_move(from, cursor);
+                        play_capture_sound();
                         selected = None;
                     } else if session.board.pieces[cursor].is_some() {
                         selected = Some(cursor);
@@ -288,6 +365,18 @@ fn main() {
                 ..
             }) => {
                 running = false;
+            }
+            Event::Resize(new_cols, new_rows) => {
+                if new_cols < TERM_COLS || new_rows < TERM_ROWS {
+                    if !wait_for_size(&mut stdout) {
+                        running = false;
+                        continue;
+                    }
+                    transmit_pieces();
+                }
+                let (cols, rows) = terminal::size().unwrap_or((TERM_COLS, TERM_ROWS));
+                h_pad = ((cols as usize).saturating_sub(BOARD_W) / 2) as u16;
+                v_pad = ((rows as usize).saturating_sub(BOARD_H) / 2) as u16;
             }
             _ => {}
         }
