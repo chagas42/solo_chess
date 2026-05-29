@@ -49,7 +49,7 @@ const CELL_W: usize = 10;
 const CELL_H: usize = 5;
 const BOARD_TOP: usize = 2;
 const BOARD_W: usize = 80;
-const BOARD_H: usize = 2 + 8 * CELL_H + 2;
+const BOARD_H: usize = 2 + 8 * CELL_H + 3;
 const TERM_ROWS: u16 = 46;
 const TERM_COLS: u16 = 80;
 
@@ -246,6 +246,8 @@ const CURSOR_BG_LIGHT: Color = Color::Rgb { r: 225, g: 225, b: 175 };
 const CURSOR_BG_DARK: Color = Color::Rgb { r: 142, g: 172, b: 105 };
 const DOT_FG: Color = Color::Rgb { r: 70, g: 70, b: 70 };
 const PIECE_FG: Color = Color::Rgb { r: 248, g: 248, b: 248 };
+const STATUS_FG: Color = Color::Rgb { r: 235, g: 235, b: 225 };
+const KEYS_FG: Color = Color::Rgb { r: 120, g: 130, b: 115 };
 
 /// Decide se desenhamos as peças com o protocolo de imagem do Kitty
 /// (kitty, Ghostty, WezTerm) ou se caímos no fallback de glifos Unicode.
@@ -427,12 +429,12 @@ fn main() {
 
         let status_line = match attempt.phase {
             Phase::Inspect => {
-                "Inspecione e planeje a sequencia \u{2014} Enter para comecar".to_string()
+                "Inspecione e planeje a sequencia, depois Enter para comecar".to_string()
             }
             Phase::Solve => String::new(),
-            Phase::Stuck => "Sem saida \u{2014} r para tentar de novo".to_string(),
+            Phase::Stuck => "Sem saida. Aperte r para tentar de novo".to_string(),
             Phase::Done => format!(
-                "Resolvido! inspecao {}s \u{00b7} execucao {}s \u{00b7} {} lances \u{00b7} streak {} \u{2014} n proximo",
+                "Resolvido! inspecao {}s, execucao {}s, {} lances, streak {}. Tecle n para o proximo",
                 attempt.inspect_secs, attempt.solve_secs, attempt.moves, streak
             ),
         };
@@ -820,15 +822,33 @@ impl Board {
             }
         }
 
-        let status_row = v_pad + (BOARD_TOP + 8 * CELL_H) as u16;
-        queue!(buf, ResetColor, cursor::MoveTo(h_pad, status_row)).unwrap();
+        // linha em branco logo abaixo do tabuleiro, pra dar respiro antes do texto
+        let gap_row = v_pad + (BOARD_TOP + 8 * CELL_H) as u16;
+        queue!(buf, ResetColor, cursor::MoveTo(h_pad, gap_row)).unwrap();
+        for _ in 0..BOARD_W {
+            write!(buf, " ").unwrap();
+        }
+
+        let status_row = gap_row + 1;
+        queue!(
+            buf,
+            cursor::MoveTo(h_pad, status_row),
+            SetForegroundColor(STATUS_FG)
+        )
+        .unwrap();
         let status_centered = format!("{:^width$}", status_line, width = BOARD_W);
         write!(buf, "{}", status_centered).unwrap();
 
-        queue!(buf, cursor::MoveTo(h_pad, status_row + 1)).unwrap();
-        let keys = "setas mover | Enter selec | h dicas | n prox | p ant | r reset | 1-0 nivel | q sair";
+        queue!(
+            buf,
+            cursor::MoveTo(h_pad, status_row + 1),
+            SetForegroundColor(KEYS_FG)
+        )
+        .unwrap();
+        let keys = "setas mover | Enter selec | h dicas | n/p puzzle | r reset | 1-0 nivel | q sair";
         let keys_centered = format!("{:^width$}", keys, width = BOARD_W);
         write!(buf, "{}", keys_centered).unwrap();
+        queue!(buf, ResetColor).unwrap();
 
         for idx in 0..64 {
             if let Some(p) = self.pieces[idx] {
