@@ -1,4 +1,5 @@
 # solo_chess
+<img width="1051" height="1114" alt="image" src="https://github.com/user-attachments/assets/52e24de1-b8ef-4412-9f50-d62ef3050468" />
 
 Um port do [Solo Chess do chess.com](https://www.chess.com/solo-chess) pra rodar no terminal, escrito em Rust.
 
