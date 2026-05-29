@@ -2,45 +2,45 @@
 
 Um port do [Solo Chess do chess.com](https://www.chess.com/solo-chess) pra rodar no terminal, escrito em Rust.
 
-Solo Chess é um quebra-cabeça de xadrez pra um jogador só: **todo lance tem que ser uma captura**, cada peça pode capturar no máximo duas vezes, e se tiver um rei ele precisa sobrar por último. Você resolve quando sobra uma peça só. É um jeito enxuto de treinar **look-ahead** — montar a cadeia inteira de capturas na cabeça antes de encostar na primeira peça.
+No Solo Chess você joga sozinho. Todo lance tem que ser uma captura, cada peça captura no máximo duas vezes, e se tiver um rei ele precisa sobrar por último. O puzzle acaba quando sobra uma peça só. É um treino enxuto de look-ahead: você monta a cadeia inteira de capturas na cabeça antes de mexer na primeira peça.
 
-A ideia nasceu de jogar isso no chess.com e querer uma versão sem distração, só teclado, rodando no terminal — e de transformar o exercício num treino de verdade pra quem pratica visualização: enxadristas calculando linhas e speedcubers fazendo look-ahead. O xadrez é o que o jogo treina diretamente (calcular uma sequência forçada antes de executar); pra quem cuba, o que transfere é o hábito de planejar a sequência inteira e segurar ela na memória de trabalho antes de "executar".
+Fiz isso porque jogava muito no chess.com e queria uma versão sem distração, só teclado, no terminal. A ideia também é servir de treino de verdade pra quem pratica visualização. No xadrez o jogo treina o cálculo direto, que é enxergar uma sequência forçada antes de executar. Pra quem faz speedcubing o que transfere é o hábito de planejar a sequência toda e segurar ela na cabeça antes de executar.
 
 ## Modo treino
 
-Cada puzzle passa por três fases, pensadas pra forçar o planejamento em vez de tentativa e erro:
+Cada puzzle passa por três fases pra te forçar a planejar em vez de ir no chute.
 
-1. **Inspeção** — o tabuleiro aparece e o cronômetro de inspeção começa a contar. Você estuda a posição e planeja a cadeia de capturas. Quando estiver pronto, `Enter` começa a resolver.
-2. **Resolução** — o cronômetro de execução roda enquanto você joga. Por padrão as casas de captura aparecem como pontinhos; aperte `h` pra desligar as dicas e resolver no escuro (look-ahead puro).
-3. **Resultado** — ao sobrar uma peça, o jogo mostra tempo de inspeção, tempo de execução, número de lances e o seu *streak* de puzzles resolvidos de primeira.
+1. Inspeção. O tabuleiro aparece e o cronômetro de inspeção começa a rodar. Você estuda a posição e planeja a cadeia. Quando estiver pronto, `Enter` começa a resolver.
+2. Resolução. O cronômetro de execução roda enquanto você joga. Por padrão as casas de captura aparecem como pontinhos. Aperte `h` pra desligar as dicas e resolver no escuro.
+3. Resultado. Quando sobra uma peça, o jogo mostra o tempo de inspeção, o tempo de execução, quantos lances você fez e seu streak de puzzles resolvidos de primeira.
 
-Se a posição travar antes de você resolver (nenhuma captura possível com mais de uma peça no tabuleiro), é beco sem saída: `r` reinicia o puzzle. Reiniciar zera o streak — o jogo é one-shot de propósito.
+Se a posição travar antes de você resolver, ou seja, não dá mais pra capturar e ainda tem mais de uma peça no tabuleiro, é beco sem saída e o `r` reinicia. Reiniciar zera o streak, porque o jogo é one-shot de propósito.
 
 ## Controles
 
 | Tecla         | Ação                                                        |
 |---------------|-------------------------------------------------------------|
 | Setas         | Pulam direto pra peça mais próxima naquela direção          |
-| `Enter`       | Começa a resolver (na inspeção) / seleciona peça e captura  |
+| `Enter`       | Começa a resolver (na inspeção) ou seleciona peça e captura |
 | `Esc`         | Cancela a seleção                                           |
-| `h`           | Liga/desliga as dicas de captura                            |
-| `n` / `p`     | Próximo / anterior puzzle                                   |
+| `h`           | Liga e desliga as dicas de captura                          |
+| `n` / `p`     | Próximo e anterior puzzle                                   |
 | `r`           | Reinicia o puzzle atual                                     |
-| `1`–`0`       | Pula pro nível (1 a 10)                                     |
+| `1`-`0`       | Pula pro nível (1 a 10)                                     |
 | `q`           | Sai                                                         |
 
-A navegação não anda casa a casa: como você só quer pousar em peças (pra selecionar ou pra capturar), a seta leva o cursor direto pra peça ocupada mais próxima naquela direção.
+A navegação não anda casa a casa. Como você só quer parar em cima de peças, seja pra selecionar ou pra capturar, a seta já leva o cursor direto pra peça mais próxima naquela direção.
 
 ## Níveis e puzzles
 
-Os puzzles são gerados na hora, de trás pra frente: o gerador parte de uma solução válida e desfaz capturas, então toda posição que aparece tem solução garantida. São 10 níveis com 3 puzzles cada; o número de peças cresce com o nível (de 3 até 13), aumentando o tamanho da cadeia que você precisa enxergar.
+Os puzzles são gerados na hora, de trás pra frente. O gerador parte de uma solução válida e vai desfazendo capturas, então toda posição que aparece tem solução garantida. São 10 níveis com 3 puzzles cada. O número de peças cresce conforme o nível, de 3 até 13, e a cadeia que você precisa enxergar vai ficando maior.
 
 ## Requisitos de terminal
 
-O jogo desenha as peças de dois jeitos:
+O jogo desenha as peças de dois jeitos.
 
-- **Imagens (Kitty graphics protocol)** — peças renderizadas como imagens de verdade. Funciona em **kitty**, **Ghostty** e **WezTerm**, que são detectados automaticamente.
-- **Glifos Unicode (♚♛♜♝♞♟)** — fallback pra qualquer outro terminal (gnome-terminal, iTerm2, Alacritty, Windows Terminal etc). Visual mais simples, mas totalmente jogável.
+- Imagens, via Kitty graphics protocol. As peças viram imagem de verdade. Funciona no kitty, no Ghostty e no WezTerm, detectados automaticamente.
+- Glifos Unicode (♚♛♜♝♞♟), o fallback pra qualquer outro terminal como gnome-terminal, iTerm2, Alacritty ou Windows Terminal. Visual mais simples, mas joga igual.
 
 A detecção é automática, mas dá pra forçar:
 
@@ -49,10 +49,10 @@ cargo run -- --ascii    # força os glifos Unicode
 cargo run -- --kitty    # força as imagens
 ```
 
-Outros requisitos:
+Fora isso:
 
-- Terminal de pelo menos **80 colunas × 46 linhas** (o jogo espera você redimensionar se estiver menor).
-- Som de captura é opcional: se você tiver `ffplay`, `mpv`, `mpg123` ou `play` no PATH, toca um efeito a cada captura. Sem nenhum deles, o jogo funciona igual, só sem som.
+- Terminal de pelo menos 80x46. Se estiver menor, o jogo pede pra você aumentar.
+- O som de captura é opcional. Se você tiver `ffplay`, `mpv`, `mpg123` ou `play` no PATH, toca um efeito a cada captura. Sem nenhum deles o jogo roda igual, só sem som.
 
 ## Build
 
@@ -62,7 +62,7 @@ cd solo_chess
 cargo run
 ```
 
-Precisa de Rust 1.85+ (edition 2024). A única dependência é o `crossterm` — base64, geração de puzzle, RNG e o protocolo do Kitty são todos implementados aqui no projeto.
+Precisa de Rust 1.85+ (edition 2024). A única dependência é o `crossterm`. Base64, geração de puzzle, RNG e o protocolo do Kitty estão todos implementados no próprio projeto.
 
 ## Estrutura
 
@@ -74,14 +74,14 @@ Precisa de Rust 1.85+ (edition 2024). A única dependência é o `crossterm` —
 
 ## Roadmap
 
-- Modo escuro de verdade (esconder o tabuleiro depois da inspeção e jogar de memória)
-- Janela de inspeção com limite de tempo, no estilo dos 15s do speedcubing
+- Modo escuro de verdade, escondendo o tabuleiro depois da inspeção pra você jogar de memória
+- Janela de inspeção com tempo limite, no estilo dos 15 segundos do speedcubing
 - Histórico de tempos e estatísticas por nível
-- Distribuição: crates.io e binários prontos
+- Distribuição em binários prontos e na crates.io
 
 ## Contribuindo
 
-Projeto em desenvolvimento — abra uma issue antes de mandar PR, a arquitetura ainda pode mudar.
+Projeto ainda em desenvolvimento. Abre uma issue antes de mandar PR, porque a arquitetura ainda pode mudar.
 
 ## Licença
 
