@@ -11,3 +11,8 @@ categories = ["games", "command-line-utilities"]
 
 [dependencies]
 crossterm = "0.28"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
