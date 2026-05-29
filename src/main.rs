@@ -7,6 +7,7 @@ use crossterm::style::{Color, ResetColor, SetBackgroundColor, SetForegroundColor
 use crossterm::terminal;
 use crossterm::{execute, queue};
 use std::io::Write;
+use std::time::{Duration, Instant};
 
 const PIECE_KING: &[u8] = include_bytes!("../assets/wk.png");
 const PIECE_QUEEN: &[u8] = include_bytes!("../assets/wq.png");
@@ -244,6 +245,127 @@ const SELECTED_BG: Color = Color::Rgb { r: 246, g: 246, b: 105 };
 const CURSOR_BG_LIGHT: Color = Color::Rgb { r: 225, g: 225, b: 175 };
 const CURSOR_BG_DARK: Color = Color::Rgb { r: 142, g: 172, b: 105 };
 const DOT_FG: Color = Color::Rgb { r: 70, g: 70, b: 70 };
+const PIECE_FG: Color = Color::Rgb { r: 248, g: 248, b: 248 };
+
+/// Decide se desenhamos as peças com o protocolo de imagem do Kitty
+/// (kitty, Ghostty, WezTerm) ou se caímos no fallback de glifos Unicode.
+/// `--ascii`/`--unicode` força o fallback; `--kitty` força as imagens.
+fn supports_kitty() -> bool {
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--ascii" || a == "--unicode") {
+        return false;
+    }
+    if args.iter().any(|a| a == "--kitty") {
+        return true;
+    }
+    if let Ok(term) = std::env::var("TERM") {
+        if term.contains("kitty") || term.contains("ghostty") {
+            return true;
+        }
+    }
+    if std::env::var("KITTY_WINDOW_ID").is_ok() || std::env::var("WEZTERM_EXECUTABLE").is_ok() {
+        return true;
+    }
+    if let Ok(prog) = std::env::var("TERM_PROGRAM") {
+        let prog = prog.to_lowercase();
+        if prog.contains("ghostty") || prog.contains("wezterm") {
+            return true;
+        }
+    }
+    false
+}
+
+fn piece_glyph(p: Piece) -> char {
+    match p {
+        Piece::King => '\u{265A}',
+        Piece::Queen => '\u{265B}',
+        Piece::Tower => '\u{265C}',
+        Piece::Bishop => '\u{265D}',
+        Piece::Knight => '\u{265E}',
+        Piece::Pawn => '\u{265F}',
+    }
+}
+
+fn first_piece(board: &Board) -> Option<usize> {
+    (0..64).find(|&i| board.pieces[i].is_some())
+}
+
+/// Casa ocupada mais próxima a partir de `cur` na direção `(dr, dc)`.
+/// Considera todas as peças no semiplano daquela direção e escolhe a
+/// de menor distância no eixo (desempate pela distância perpendicular),
+/// de modo que setas repetidas alcançam qualquer peça do tabuleiro.
+fn nearest_in_direction(board: &Board, cur: usize, dr: i32, dc: i32) -> Option<usize> {
+    let cr = (cur / 8) as i32;
+    let cc = (cur % 8) as i32;
+    let mut best: Option<(i32, i32, usize)> = None;
+    for idx in 0..64 {
+        if idx == cur || board.pieces[idx].is_none() {
+            continue;
+        }
+        let r = (idx / 8) as i32;
+        let c = (idx % 8) as i32;
+        let along = (r - cr) * dr + (c - cc) * dc;
+        if along <= 0 {
+            continue;
+        }
+        let perp = if dr != 0 { (c - cc).abs() } else { (r - cr).abs() };
+        match best {
+            Some((a, p, _)) if (along, perp) >= (a, p) => {}
+            _ => best = Some((along, perp, idx)),
+        }
+    }
+    best.map(|(_, _, idx)| idx)
+}
+
+#[derive(PartialEq, Clone, Copy)]
+enum Phase {
+    Inspect,
+    Solve,
+    Done,
+    Stuck,
+}
+
+#[derive(PartialEq, Clone, Copy)]
+enum Hints {
+    Full,
+    Off,
+}
+
+/// Estado de uma tentativa do puzzle atual: fase do treino + cronômetros.
+struct Attempt {
+    phase: Phase,
+    inspect_start: Instant,
+    solve_start: Instant,
+    inspect_secs: u64,
+    solve_secs: u64,
+    moves: u32,
+    clean: bool,
+}
+
+impl Attempt {
+    fn new() -> Self {
+        let now = Instant::now();
+        Attempt {
+            phase: Phase::Inspect,
+            inspect_start: now,
+            solve_start: now,
+            inspect_secs: 0,
+            solve_secs: 0,
+            moves: 0,
+            clean: true,
+        }
+    }
+}
+
+fn fmt_clock(secs: u64) -> String {
+    format!("{:02}:{:02}", secs / 60, secs % 60)
+}
+
+fn write_info_line(buf: &mut Vec<u8>, info: &str, h_pad: u16, v_pad: u16) {
+    let centered = format!("{:^width$}", info, width = BOARD_W);
+    queue!(buf, ResetColor, cursor::MoveTo(h_pad, v_pad)).unwrap();
+    write!(buf, "{}", centered).unwrap();
+}
 
 fn main() {
     terminal::enable_raw_mode().unwrap();
@@ -262,149 +384,179 @@ fn main() {
         return;
     }
 
+    let kitty = supports_kitty();
+
     run_splash(&mut stdout);
-    transmit_pieces();
+    if kitty {
+        transmit_pieces();
+    }
 
     let (term_cols, term_rows) = terminal::size().unwrap_or((TERM_COLS, TERM_ROWS));
     let mut h_pad: u16 = ((term_cols as usize).saturating_sub(BOARD_W) / 2) as u16;
     let mut v_pad: u16 = ((term_rows as usize).saturating_sub(BOARD_H) / 2) as u16;
 
     let mut session = PuzzleSession::new();
-    let mut cursor: usize = 28;
+    let mut cursor: usize = first_piece(&session.board).unwrap_or(28);
     let mut selected: Option<usize> = None;
+    let mut attempt = Attempt::new();
+    let mut streak: u32 = 0;
+    let mut hints = Hints::Full;
     let mut running = true;
+    let mut dirty = true;
+    let mut last_secs = u64::MAX;
 
     while running {
+        let level = (session.current_level + 1) as u8;
+        let puzzle_num = session.current_puzzle + 1;
+        let total = session.levels[session.current_level].len();
+
+        let cur_secs = match attempt.phase {
+            Phase::Inspect => attempt.inspect_start.elapsed().as_secs(),
+            Phase::Solve => attempt.solve_start.elapsed().as_secs(),
+            Phase::Done => attempt.solve_secs,
+            Phase::Stuck => 0,
+        };
+
+        let clock = match attempt.phase {
+            Phase::Inspect => format!("inspecao {}", fmt_clock(cur_secs)),
+            Phase::Solve => format!("resolvendo {}", fmt_clock(cur_secs)),
+            Phase::Done => format!("resolvido {}", fmt_clock(attempt.solve_secs)),
+            Phase::Stuck => "sem saida".to_string(),
+        };
+        let info_line = format!("Nivel {}  Puzzle {}/{}   {}", level, puzzle_num, total, clock);
+
+        let status_line = match attempt.phase {
+            Phase::Inspect => {
+                "Inspecione e planeje a sequencia \u{2014} Enter para comecar".to_string()
+            }
+            Phase::Solve => String::new(),
+            Phase::Stuck => "Sem saida \u{2014} r para tentar de novo".to_string(),
+            Phase::Done => format!(
+                "Resolvido! inspecao {}s \u{00b7} execucao {}s \u{00b7} {} lances \u{00b7} streak {} \u{2014} n proximo",
+                attempt.inspect_secs, attempt.solve_secs, attempt.moves, streak
+            ),
+        };
+
+        let show_hints = attempt.phase == Phase::Solve && hints == Hints::Full;
         let moves = match selected {
-            Some(i) if session.board.moves_used[i] < 2 => session.board.moves(i),
+            Some(i) if show_hints && session.board.moves_used[i] < 2 => session.board.moves(i),
             _ => Vec::new(),
         };
-        session.board.render(
-            cursor,
-            selected,
-            &moves,
-            (session.current_level + 1) as u8,
-            session.current_puzzle + 1,
-            session.levels[session.current_level].len(),
-            h_pad,
-            v_pad,
-        );
+
+        if dirty {
+            session
+                .board
+                .render(cursor, selected, &moves, &info_line, &status_line, kitty, h_pad, v_pad);
+            dirty = false;
+            last_secs = cur_secs;
+        } else if matches!(attempt.phase, Phase::Inspect | Phase::Solve) && cur_secs != last_secs {
+            last_secs = cur_secs;
+            let mut buf: Vec<u8> = Vec::with_capacity(256);
+            write_info_line(&mut buf, &info_line, h_pad, v_pad);
+            let mut lock = stdout.lock();
+            lock.write_all(&buf).unwrap();
+            lock.flush().unwrap();
+        }
+
+        if !event::poll(Duration::from_millis(200)).unwrap() {
+            continue;
+        }
 
         match event::read().unwrap() {
-            Event::Key(KeyEvent {
-                code: KeyCode::Up,
-                kind: KeyEventKind::Press,
-                ..
-            }) => {
-                if cursor >= 8 {
-                    cursor -= 8;
-                }
-            }
-            Event::Key(KeyEvent {
-                code: KeyCode::Down,
-                kind: KeyEventKind::Press,
-                ..
-            }) => {
-                if cursor < 56 {
-                    cursor += 8;
-                }
-            }
-            Event::Key(KeyEvent {
-                code: KeyCode::Left,
-                kind: KeyEventKind::Press,
-                ..
-            }) => {
-                if cursor % 8 > 0 {
-                    cursor -= 1;
-                }
-            }
-            Event::Key(KeyEvent {
-                code: KeyCode::Right,
-                kind: KeyEventKind::Press,
-                ..
-            }) => {
-                if cursor % 8 < 7 {
-                    cursor += 1;
-                }
-            }
-            Event::Key(KeyEvent {
-                code: KeyCode::Enter,
-                kind: KeyEventKind::Press,
-                ..
-            }) => match selected {
-                None => {
-                    if session.board.pieces[cursor].is_some() {
-                        selected = Some(cursor);
+            Event::Key(KeyEvent { code, kind: KeyEventKind::Press, .. }) => {
+                dirty = true;
+                match code {
+                    KeyCode::Up | KeyCode::Down | KeyCode::Left | KeyCode::Right => {
+                        let (dr, dc) = match code {
+                            KeyCode::Up => (-1, 0),
+                            KeyCode::Down => (1, 0),
+                            KeyCode::Left => (0, -1),
+                            _ => (0, 1),
+                        };
+                        if let Some(next) = nearest_in_direction(&session.board, cursor, dr, dc) {
+                            cursor = next;
+                        }
+                    }
+                    KeyCode::Enter => match attempt.phase {
+                        Phase::Inspect => {
+                            attempt.inspect_secs = attempt.inspect_start.elapsed().as_secs();
+                            attempt.solve_start = Instant::now();
+                            attempt.phase = Phase::Solve;
+                        }
+                        Phase::Solve => match selected {
+                            None => {
+                                if session.board.pieces[cursor].is_some() {
+                                    selected = Some(cursor);
+                                }
+                            }
+                            Some(from) => {
+                                if from == cursor {
+                                    selected = None;
+                                } else if session.board.is_valid_move(from, cursor) {
+                                    session.board.make_move(from, cursor);
+                                    play_capture_sound();
+                                    attempt.moves += 1;
+                                    selected = None;
+                                    if session.board.is_won() {
+                                        attempt.solve_secs =
+                                            attempt.solve_start.elapsed().as_secs();
+                                        attempt.phase = Phase::Done;
+                                        if attempt.clean {
+                                            streak += 1;
+                                        }
+                                    } else if !session.board.has_any_valid_move() {
+                                        attempt.clean = false;
+                                        attempt.phase = Phase::Stuck;
+                                    }
+                                } else if session.board.pieces[cursor].is_some() {
+                                    selected = Some(cursor);
+                                } else {
+                                    selected = None;
+                                }
+                            }
+                        },
+                        _ => {}
+                    },
+                    KeyCode::Esc => {
+                        selected = None;
+                    }
+                    KeyCode::Char('h') => {
+                        hints = if hints == Hints::Full { Hints::Off } else { Hints::Full };
+                    }
+                    KeyCode::Char('n') => {
+                        session.next();
+                        cursor = first_piece(&session.board).unwrap_or(28);
+                        selected = None;
+                        attempt = Attempt::new();
+                    }
+                    KeyCode::Char('p') => {
+                        session.prev();
+                        cursor = first_piece(&session.board).unwrap_or(28);
+                        selected = None;
+                        attempt = Attempt::new();
+                    }
+                    KeyCode::Char('r') => {
+                        session.reset();
+                        cursor = first_piece(&session.board).unwrap_or(28);
+                        selected = None;
+                        attempt = Attempt::new();
+                        streak = 0;
+                    }
+                    KeyCode::Char(c) if c.is_ascii_digit() => {
+                        let lvl = if c == '0' { 9 } else { (c.to_digit(10).unwrap() - 1) as usize };
+                        session.goto_level(lvl);
+                        cursor = first_piece(&session.board).unwrap_or(28);
+                        selected = None;
+                        attempt = Attempt::new();
+                        streak = 0;
+                    }
+                    KeyCode::Char('q') => {
+                        running = false;
+                    }
+                    _ => {
+                        dirty = false;
                     }
                 }
-                Some(from) => {
-                    if from == cursor {
-                        selected = None;
-                    } else if session.board.is_valid_move(from, cursor) {
-                        session.board.make_move(from, cursor);
-                        play_capture_sound();
-                        selected = None;
-                    } else if session.board.pieces[cursor].is_some() {
-                        selected = Some(cursor);
-                    } else {
-                        selected = None;
-                    }
-                }
-            },
-            Event::Key(KeyEvent {
-                code: KeyCode::Esc,
-                kind: KeyEventKind::Press,
-                ..
-            }) => {
-                selected = None;
-            }
-            Event::Key(KeyEvent {
-                code: KeyCode::Char('n'),
-                kind: KeyEventKind::Press,
-                ..
-            }) => {
-                session.next();
-                cursor = 28;
-                selected = None;
-            }
-            Event::Key(KeyEvent {
-                code: KeyCode::Char('p'),
-                kind: KeyEventKind::Press,
-                ..
-            }) => {
-                session.prev();
-                cursor = 28;
-                selected = None;
-            }
-            Event::Key(KeyEvent {
-                code: KeyCode::Char('r'),
-                kind: KeyEventKind::Press,
-                ..
-            }) => {
-                session.reset();
-                cursor = 28;
-                selected = None;
-            }
-            Event::Key(KeyEvent {
-                code: KeyCode::Char(c),
-                kind: KeyEventKind::Press,
-                ..
-            }) if c.is_ascii_digit() => {
-                let level = if c == '0' {
-                    9
-                } else {
-                    (c.to_digit(10).unwrap() - 1) as usize
-                };
-                session.goto_level(level);
-                cursor = 28;
-                selected = None;
-            }
-            Event::Key(KeyEvent {
-                code: KeyCode::Char('q'),
-                kind: KeyEventKind::Press,
-                ..
-            }) => {
-                running = false;
             }
             Event::Resize(new_cols, new_rows) => {
                 if new_cols < TERM_COLS || new_rows < TERM_ROWS {
@@ -412,11 +564,14 @@ fn main() {
                         running = false;
                         continue;
                     }
-                    transmit_pieces();
+                    if kitty {
+                        transmit_pieces();
+                    }
                 }
                 let (cols, rows) = terminal::size().unwrap_or((TERM_COLS, TERM_ROWS));
                 h_pad = ((cols as usize).saturating_sub(BOARD_W) / 2) as u16;
                 v_pad = ((rows as usize).saturating_sub(BOARD_H) / 2) as u16;
+                dirty = true;
             }
             _ => {}
         }
@@ -590,22 +745,19 @@ impl Board {
         cursor: usize,
         selected: Option<usize>,
         moves: &[usize],
-        level: u8,
-        puzzle_num: usize,
-        total_puzzles: usize,
+        info_line: &str,
+        status_line: &str,
+        kitty: bool,
         h_pad: u16,
         v_pad: u16,
     ) {
         let mut buf: Vec<u8> = Vec::with_capacity(16384);
-        let won = self.is_won();
-        let stuck = !won && !self.has_any_valid_move();
 
-        kitty::clear_placements(&mut buf);
+        if kitty {
+            kitty::clear_placements(&mut buf);
+        }
 
-        let info = format!("Level {}   Puzzle {}/{}", level, puzzle_num, total_puzzles);
-        let info_centered = format!("{:^width$}", info, width = BOARD_W);
-        queue!(buf, ResetColor, cursor::MoveTo(h_pad, v_pad)).unwrap();
-        write!(buf, "{}", info_centered).unwrap();
+        write_info_line(&mut buf, info_line, h_pad, v_pad);
         queue!(buf, cursor::MoveTo(h_pad, v_pad + 1)).unwrap();
         for _ in 0..BOARD_W {
             write!(buf, " ").unwrap();
@@ -670,18 +822,11 @@ impl Board {
 
         let status_row = v_pad + (BOARD_TOP + 8 * CELL_H) as u16;
         queue!(buf, ResetColor, cursor::MoveTo(h_pad, status_row)).unwrap();
-        let status_msg = if won {
-            "SOLVED! press n for next puzzle"
-        } else if stuck {
-            "Stuck \u{2014} press r to reset"
-        } else {
-            ""
-        };
-        let status_centered = format!("{:^width$}", status_msg, width = BOARD_W);
+        let status_centered = format!("{:^width$}", status_line, width = BOARD_W);
         write!(buf, "{}", status_centered).unwrap();
 
         queue!(buf, cursor::MoveTo(h_pad, status_row + 1)).unwrap();
-        let keys = "\u{2191}\u{2193}\u{2190}\u{2192} move | Enter select | n next | p prev | r reset | 1-0 level | q quit";
+        let keys = "setas mover | Enter selec | h dicas | n prox | p ant | r reset | 1-0 nivel | q sair";
         let keys_centered = format!("{:^width$}", keys, width = BOARD_W);
         write!(buf, "{}", keys_centered).unwrap();
 
@@ -689,10 +834,36 @@ impl Board {
             if let Some(p) = self.pieces[idx] {
                 let row = idx / 8;
                 let col = idx % 8;
-                let term_col = h_pad + (col * CELL_W + 2) as u16;
-                let term_row = v_pad + (BOARD_TOP + row * CELL_H + 1) as u16;
-                queue!(buf, cursor::MoveTo(term_col, term_row)).unwrap();
-                kitty::place_image(&mut buf, piece_image_id(p), IMG_COLS, IMG_ROWS);
+                if kitty {
+                    let term_col = h_pad + (col * CELL_W + 2) as u16;
+                    let term_row = v_pad + (BOARD_TOP + row * CELL_H + 1) as u16;
+                    queue!(buf, cursor::MoveTo(term_col, term_row)).unwrap();
+                    kitty::place_image(&mut buf, piece_image_id(p), IMG_COLS, IMG_ROWS);
+                } else {
+                    let light = (row + col) % 2 == 0;
+                    let is_selected = selected == Some(idx);
+                    let is_cursor = idx == cursor;
+                    let bg = if is_selected {
+                        SELECTED_BG
+                    } else if is_cursor {
+                        if light { CURSOR_BG_LIGHT } else { CURSOR_BG_DARK }
+                    } else if light {
+                        LIGHT_SQ
+                    } else {
+                        DARK_SQ
+                    };
+                    let term_col = h_pad + (col * CELL_W + 4) as u16;
+                    let term_row = v_pad + (BOARD_TOP + row * CELL_H + 2) as u16;
+                    queue!(
+                        buf,
+                        cursor::MoveTo(term_col, term_row),
+                        SetBackgroundColor(bg),
+                        SetForegroundColor(PIECE_FG)
+                    )
+                    .unwrap();
+                    write!(buf, "{}", piece_glyph(p)).unwrap();
+                    queue!(buf, ResetColor).unwrap();
+                }
             }
         }
 

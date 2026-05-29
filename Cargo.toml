@@ -2,6 +2,12 @@
 name = "solo_chess"
 version = "0.1.0"
 edition = "2024"
+description = "Solo Chess no terminal — um treino de look-ahead pra enxadristas e speedcubers"
+license = "MIT"
+repository = "https://github.com/chagas42/solo_chess"
+readme = "README.md"
+keywords = ["chess", "puzzle", "tui", "terminal", "training"]
+categories = ["games", "command-line-utilities"]
 
 [dependencies]
 crossterm = "0.28"
