@@ -575,6 +575,18 @@ fn main() {
                 v_pad = ((rows as usize).saturating_sub(BOARD_H) / 2) as u16;
                 dirty = true;
             }
+            Event::Resize(new_cols, new_rows) => {
+                if new_cols < TERM_COLS || new_rows < TERM_ROWS {
+                    if !wait_for_size(&mut stdout) {
+                        running = false;
+                        continue;
+                    }
+                    transmit_pieces();
+                }
+                let (cols, rows) = terminal::size().unwrap_or((TERM_COLS, TERM_ROWS));
+                h_pad = ((cols as usize).saturating_sub(BOARD_W) / 2) as u16;
+                v_pad = ((rows as usize).saturating_sub(BOARD_H) / 2) as u16;
+            }
             _ => {}
         }
     }
