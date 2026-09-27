@@ -1,56 +1,61 @@
 # solo_chess
+<img width="1051" height="1114" alt="image" src="https://github.com/user-attachments/assets/52e24de1-b8ef-4412-9f50-d62ef3050468" />
 
-A terminal port of [chess.com's Solo Chess](https://www.chess.com/solo-chess) puzzle, written in Rust.
+Um port do [Solo Chess do chess.com](https://www.chess.com/solo-chess) pra rodar no terminal, escrito em Rust.
 
-Solo Chess is a single-player chess variant: every move must be a capture, each piece can capture at most twice, and if there's a king it must be the last piece standing. It's a focused way to train look-ahead — planning a chain of moves before committing to the first one.
+No Solo Chess você joga sozinho. Todo lance tem que ser uma captura, cada peça captura no máximo duas vezes, e se tiver um rei ele precisa sobrar por último. O puzzle acaba quando sobra uma peça só. É um treino enxuto de look-ahead: você monta a sequência inteira de capturas de cabeça antes de tocar na primeira peça.
 
-Inspired by playing it on chess.com and wanting a distraction-free, keyboard-only version that runs in the terminal.
+Fiz isso porque jogava bastante no chess.com e queria uma versão sem distração, só teclado, no terminal. A ideia também é servir como treino pra quem pratica visualização. No xadrez ele exercita o cálculo direto, que é enxergar uma sequência forçada antes de executar. Pra quem faz speedcubing, o que transfere é o hábito de planejar a sequência toda e mantê-la na memória antes de executar.
 
-## Status
+## Modo treino
 
-Early development. Not playable yet.
+Cada puzzle passa por três fases, pensadas pra você planejar em vez de resolver por tentativa e erro.
 
-| Module        | Responsibility                                       | Status   |
-|---------------|------------------------------------------------------|----------|
-| `piece.rs`    | Piece types, movement rules, capture limits          | Planned  |
-| `board.rs`    | 8×8 board state, algebraic coordinates               | Planned  |
-| `game.rs`     | Solo Chess rules, validation, win/deadlock detection | Planned  |
-| `puzzle.rs`   | Hardcoded puzzles, puzzle loading                    | Planned  |
-| `renderer.rs` | In-place ASCII/Unicode rendering                     | Planned  |
-| `input.rs`    | Command parser (REPL first, then TUI)                | Planned  |
+1. Inspeção. O tabuleiro aparece e o cronômetro de inspeção começa a rodar. Você estuda a posição e planeja a cadeia. Quando estiver pronto, `Enter` começa a resolver.
+2. Resolução. O cronômetro de execução roda enquanto você joga. Por padrão as casas de captura aparecem como pontinhos. Aperte `h` pra desligar as dicas e resolver sem nenhuma ajuda.
+3. Resultado. Quando sobra uma peça, o jogo mostra o tempo de inspeção, o tempo de execução, quantos lances você fez e seu streak de puzzles resolvidos de primeira.
 
-Progress is tracked under [Milestones](../../milestones).
+Se a posição travar antes de você resolver, quando não há mais captura possível e ainda sobra mais de uma peça no tabuleiro, é um beco sem saída e o `r` reinicia. Reiniciar zera o streak, porque o jogo é one-shot de propósito.
 
-## Rules
+## Controles
 
-1. Every move must be a capture — moving to an empty square is not allowed.
-2. Each piece can capture at most twice. After two captures, it is spent and cannot move again.
-3. The king cannot be captured. If a king is present, it must be the last piece on the board.
-4. Pieces move according to standard chess rules — pawn diagonal-forward capture, knight L-jump, rook/bishop/queen with blocking, king one square.
-5. The puzzle is solved when one piece remains. If no captures are possible with more than one piece on the board, the puzzle is in a dead end and must be restarted.
+| Tecla         | Ação                                                        |
+|---------------|-------------------------------------------------------------|
+| Setas         | Pulam direto pra peça mais próxima naquela direção          |
+| `Enter`       | Começa a resolver (na inspeção) ou seleciona peça e captura |
+| `Esc`         | Cancela a seleção                                           |
+| `h`           | Liga e desliga as dicas de captura                          |
+| `n` / `p`     | Próximo e anterior puzzle                                   |
+| `r`           | Reinicia o puzzle atual                                     |
+| `1`-`0`       | Pula pro nível (1 a 10)                                     |
+| `q`           | Sai                                                         |
 
-## Roadmap
+A navegação não anda casa a casa. Como você só quer parar em cima de peças, seja pra selecionar ou pra capturar, a seta já leva o cursor direto pra peça mais próxima naquela direção.
 
-The project is being built as a walking skeleton — the smallest visible thing first, then layered features. Each milestone below maps to a GitHub Milestone with its own issues.
+## Níveis e puzzles
 
-- **M1 — Walking skeleton**: empty board renders in the terminal
-- **M2 — Pieces on the board**: piece types, Unicode glyphs, Board struct
-- **M3 — First playable move**: Knight movement + REPL input
-- **M4 — All piece movements**: ray casting, knight jumps, pawn captures
-- **M5 — Solo Chess rules**: 2-capture limit, king protection, win, deadlock
-- **M6 — Puzzles + REPL polish**: puzzle library, undo, in-place redraw
-- **M7 — TUI mode**: arrow-key navigation, alternate screen, color
-- **M8 — Distribution**: crates.io, prebuilt binaries, demo recording
+Os puzzles são gerados na hora, de trás pra frente. O gerador parte de uma solução válida e vai desfazendo capturas, então toda posição que aparece tem solução garantida. São 10 níveis com 3 puzzles cada. O número de peças cresce conforme o nível, de 3 até 13, e a cadeia que você precisa enxergar vai ficando maior.
 
-## Design decisions
+## Requisitos de terminal
 
-- **Walking skeleton over bottom-up.** Ship something visible at every step. Refactoring Rust is cheap; momentum is not.
-- **Unicode chess glyphs (♚♛♜♝♞♟) over letter codes.** More readable in modern monospace terminals. Letters reserved as a fallback if glyph alignment fails on a target terminal.
-- **REPL input first, TUI second.** Line-based `e4 d6` commands until the rules engine is solid, then arrow-key navigation via `crossterm`. Separating input source from game logic keeps the migration cheap.
-- **In-place redraw.** Every state change repaints the same screen region — no scrolling history, no extra boards stacking down the terminal.
-- **Hardcoded puzzles first.** Procedural puzzle generation is NP-hard and not on the critical path for the training-tool goal. A small curated library beats a flaky generator.
+O jogo desenha as peças de dois jeitos.
 
-## Building
+- Imagens, via Kitty graphics protocol. As peças são renderizadas como imagens reais. Funciona no kitty, no Ghostty e no WezTerm, detectados automaticamente.
+- Glifos Unicode (♚♛♜♝♞♟), o fallback pra qualquer outro terminal como gnome-terminal, iTerm2, Alacritty ou Windows Terminal. Visual mais simples, mas igualmente jogável.
+
+A detecção é automática, mas dá pra forçar:
+
+```bash
+cargo run -- --ascii    # força os glifos Unicode
+cargo run -- --kitty    # força as imagens
+```
+
+Fora isso:
+
+- Terminal de pelo menos 80x46. Se estiver menor, o jogo pede pra aumentar a janela.
+- O som de captura é opcional. Se você tiver `ffplay`, `mpv`, `mpg123` ou `play` no PATH, toca um efeito a cada captura. Sem nenhum deles o jogo funciona normalmente, só sem som.
+
+## Build
 
 ```bash
 git clone git@github.com:chagas42/solo_chess.git
@@ -58,12 +63,27 @@ cd solo_chess
 cargo run
 ```
 
-Requires Rust 1.85+ (edition 2024).
+Precisa de Rust 1.85+ (edition 2024). A única dependência é o `crossterm`. Base64, geração de puzzle, RNG e o protocolo do Kitty estão todos implementados no próprio projeto.
 
-## Contributing
+## Estrutura
 
-Early days — open an issue before submitting a pull request, the architecture may still change.
+| Arquivo       | Responsabilidade                                                     |
+|---------------|----------------------------------------------------------------------|
+| `main.rs`     | Loop do jogo, regras do Solo Chess, render do tabuleiro, modo treino |
+| `puzzle.rs`   | Geração reversa de puzzles e RNG                                     |
+| `kitty.rs`    | Base64 e Kitty graphics protocol pra desenhar as peças               |
 
-## License
+## Roadmap
+
+- Modo cego, escondendo o tabuleiro depois da inspeção pra jogar de memória
+- Janela de inspeção com tempo limite, no estilo dos 15 segundos do speedcubing
+- Histórico de tempos e estatísticas por nível
+- Distribuição em binários prontos e na crates.io
+
+## Contribuindo
+
+Projeto ainda em desenvolvimento. Abre uma issue antes de mandar PR, porque a arquitetura ainda pode mudar.
+
+## Licença
 
 MIT
